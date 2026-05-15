@@ -68,4 +68,16 @@ pub use api::http::{AppState, create_router, serve,
     IntegrityRequest, IntegrityResponse, RecoverRequest, RecoverResponse,
     StatusResponse, ApiError,
 };
-pub use holographic::{HolographicMemory, HoloError, StoreResult, FaultToleranceResult};
+pub use retrieval::holographic_reasoner::{
+    HolographicReasoner, AttentionConfig, InferenceResult, InferenceConclusion,
+    InferenceStep, InferenceType,
+};
+pub use codec::cross_modal::{
+    CrossModalReasoner, CrossModalMapping, CrossModalAssociation,
+    Modality, ModalityEncoder, TextModalityEncoder, ImageModalityEncoder,
+};
+pub use storage::adaptive_redundancy::{
+    AdaptiveRedundancy, RedundancyStrategy, AdaptiveRedundancyDecision,
+    ImportanceScore, ImportanceFactors, ImportanceLevel, SuggestedRsConfig,
+};
+pub use holographic::{HolographicMemory, HoloError, StoreResult, FaultToleranceResult, AdaptiveStoreResult};

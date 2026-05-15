@@ -4,6 +4,27 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/)。
 
+## [0.4.0] - 2025-05-16
+
+### 新增
+
+- 全息推理引擎 `HolographicReasoner`：频域多头注意力推理 + 模式匹配推理 + 频域传播推理 + 推理链可解释性 + 相干度评估
+- 跨模态联想引擎 `CrossModalReasoner`：`ModalityEncoder` trait + `TextModalityEncoder` + `ImageModalityEncoder` + `CrossModalMapping` 频域桥接 + 文本↔图像双向映射
+- 自适应冗余引擎 `AdaptiveRedundancy`：四维重要性评分（access_frequency + recency + connectivity + reconstruction_value）→ 四级等级（Low/Medium/High/Critical）→ 动态 RS 冗余决策
+- `HolographicMemory` 认知引擎 builder：`with_reasoner()` + `with_cross_modal()` + `with_adaptive_redundancy()`
+- `HolographicMemory` 认知高阶 API：`reason()` + `reason_from_fragment()` + `cross_modal_search()` + `adaptive_store()` + `build_propagation_graph()` + `register_reasoning_pattern()` + `advance_redundancy_time()`
+- `HolographicMemory` 访问器：`adaptive_redundancy()` + `reasoner()` + `cross_modal_reasoner()`
+- `AdaptiveStoreResult` 结构体
+- 认知基础设施综合示例：`examples/cognitive_demo.rs`
+- 认知基础设施测试：18 个测试（全息推理 + 跨模态联想 + 自适应冗余）
+- lib.rs 认知引擎导出：`HolographicReasoner`、`AttentionConfig`、`InferenceResult`、`CrossModalReasoner`、`CrossModalMapping`、`CrossModalAssociation`、`Modality`、`AdaptiveRedundancy`、`RedundancyStrategy`、`AdaptiveRedundancyDecision`、`ImportanceScore`、`ImportanceLevel`
+
+### 变更
+
+- 项目定位从"存储引擎"升级为"认知基础设施"
+- README.md 全面更新至 v0.4.0（新增认知基础设施章节）
+- ROADMAP.md 更新至 v0.4.0+
+
 ## [0.3.0] - 2025-05-15
 
 ### 新增

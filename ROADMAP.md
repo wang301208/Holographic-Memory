@@ -275,16 +275,17 @@ Holographic-Memory/
 - criterion 基准测试：编码/解码/检索/RS/SIMD/HM 性能基线
 - **131 个测试全部通过**
 
-### v0.4.0 — 性能优化与发布准备（规划中）
-- 性能热点分析与优化（SIMD 路径验证、内存布局、缓存友好）
-- crates.io 发布准备（docs.rs 文档注释、元数据完善）
-- PyO3 Python SDK
-- 基准测试 HTML 报告集成 CI
-- 大规模压力测试（百万级片段）
+### v0.4.0 — 认知基础设施版（当前）
+- 全息推理引擎 `HolographicReasoner`：频域多头注意力 + 模式匹配 + 频域传播 + 推理链可解释性
+- 跨模态联想引擎 `CrossModalReasoner`：ModalityEncoder trait + 文本↔图像频域桥接
+- 自适应冗余引擎 `AdaptiveRedundancy`：四维重要性评分 → 动态 RS 冗余决策
+- 统一认知 API：`reason()` + `cross_modal_search()` + `adaptive_store()`
+- **150+ 个测试全部通过**
 
-### v0.5.0 — 分布式与多模态（远期）
-- 多模态输入适配（文本/图像/音频向量化）
+### v0.5.0 — 分布式与多模态增强（远期）
+- 多模态输入适配（音频/视频/结构化数据）
 - 分布式全息（一致性哈希 + gossip + 反熵修复）
 - 增量在线学习
 - GPU 异构计算（wgpu）
-- 全息推理引擎
+- 语义嵌入（Candle/ONNX）
+- 全息推理引擎与 LLM 注意力机制的映射

@@ -4,13 +4,19 @@ use crate::codec::fourier_encoder::FourierEncoder;
 use crate::codec::hologram_fragmenter::HologramFragmenter;
 use crate::codec::redundancy_weaver::RedundancyWeaver;
 use crate::codec::reed_solomon::ReedSolomon;
+use crate::codec::cross_modal::{CrossModalReasoner, Modality, CrossModalAssociation};
 use crate::foundation::config::HolographicConfig;
 use crate::retrieval::partial_recovery::PartialRecoveryEngine;
 use crate::retrieval::similarity_matcher::SimilarityMatcher;
+use crate::retrieval::holographic_reasoner::{HolographicReasoner, AttentionConfig, InferenceResult};
 use crate::storage::holographic_index::HolographicIndex;
 use crate::storage::persistence::PersistenceEngine;
 use crate::storage::tiered_index::{TieredIndex, TieredConfig};
 use crate::storage::mmap_persistence::MmapPersistence;
+use crate::storage::adaptive_redundancy::{
+    AdaptiveRedundancy, RedundancyStrategy, AdaptiveRedundancyDecision,
+    ImportanceScore, ImportanceFactors, ImportanceLevel,
+};
 use crate::types::{AssociatedItem, FragmentId, HologramFragment, IntegrityReport, RetrievalResult};
 
 /// 全息记忆存储的统一错误类型
@@ -67,6 +73,9 @@ pub struct HolographicMemory {
     persistence: Option<PersistenceEngine>,
     rs_codec: Option<ReedSolomon>,
     mmap: Option<MmapPersistence>,
+    reasoner: Option<HolographicReasoner>,
+    cross_modal: Option<CrossModalReasoner>,
+    adaptive_redundancy: Option<AdaptiveRedundancy>,
     next_source_id: u64,
 }
 
@@ -84,6 +93,9 @@ impl HolographicMemory {
             index: IndexBackend::Simple(HolographicIndex::new()),
             rs_codec: None,
             mmap: None,
+            reasoner: None,
+            cross_modal: None,
+            adaptive_redundancy: None,
             config,
             next_source_id: 1,
         }
@@ -112,6 +124,26 @@ impl HolographicMemory {
     /// 配置零拷贝 mmap 持久化
     pub fn with_mmap(mut self, dir: impl AsRef<Path>) -> Self {
         self.mmap = Some(MmapPersistence::new(dir));
+        self
+    }
+
+    /// 配置全息推理引擎（频域注意力 + 模式匹配 + 频域传播）
+    pub fn with_reasoner(mut self, config: AttentionConfig) -> Self {
+        self.reasoner = Some(HolographicReasoner::new(config));
+        self
+    }
+
+    /// 配置跨模态联想引擎（文本↔图像频域桥接）
+    pub fn with_cross_modal(mut self) -> Self {
+        let mut cm = CrossModalReasoner::new();
+        cm.register_text_image_bridge(64, 64);
+        self.cross_modal = Some(cm);
+        self
+    }
+
+    /// 配置自适应冗余引擎（按重要性动态调整 RS 冗余度）
+    pub fn with_adaptive_redundancy(mut self, strategy: RedundancyStrategy) -> Self {
+        self.adaptive_redundancy = Some(AdaptiveRedundancy::new(strategy));
         self
     }
 
@@ -319,12 +351,173 @@ impl HolographicMemory {
         }
     }
 
+    /// 全息推理：对查询数据执行频域注意力推理 + 模式匹配 + 频域传播
+    ///
+    /// 需先配置 `with_reasoner`，否则返回错误
+    pub fn reason(&mut self, query: &[f64], top_k: usize) -> Result<InferenceResult, HoloError> {
+        let reasoner = self.reasoner.as_ref()
+            .ok_or_else(|| HoloError::Retrieval("未配置全息推理引擎，请先调用 with_reasoner()".to_string()))?;
+
+        let encode_result = self.encoder.encode(query);
+        if encode_result.fragments.is_empty() {
+            return Err(HoloError::Encode("查询编码结果为空".to_string()));
+        }
+
+        let knowledge_base = self.all_fragments();
+        if knowledge_base.is_empty() {
+            return Err(HoloError::Retrieval("知识库为空，无法推理".to_string()));
+        }
+
+        Ok(reasoner.reason(&encode_result.fragments[0], &knowledge_base, top_k))
+    }
+
+    /// 全息推理（从已有片段推理，避免重复编码）
+    pub fn reason_from_fragment(
+        &self,
+        query_fragment: &HologramFragment,
+        top_k: usize,
+    ) -> Result<InferenceResult, HoloError> {
+        let reasoner = self.reasoner.as_ref()
+            .ok_or_else(|| HoloError::Retrieval("未配置全息推理引擎".to_string()))?;
+
+        let knowledge_base = self.all_fragments();
+        if knowledge_base.is_empty() {
+            return Err(HoloError::Retrieval("知识库为空".to_string()));
+        }
+
+        Ok(reasoner.reason(query_fragment, &knowledge_base, top_k))
+    }
+
+    /// 跨模态联想检索：从源模态检索目标模态的关联片段
+    ///
+    /// 需先配置 `with_cross_modal`，否则返回错误
+    pub fn cross_modal_search(
+        &mut self,
+        query: &[f64],
+        source_modality: &Modality,
+        target_modality: &Modality,
+        top_k: usize,
+    ) -> Result<Vec<CrossModalAssociation>, HoloError> {
+        let cm = self.cross_modal.as_ref()
+            .ok_or_else(|| HoloError::Retrieval("未配置跨模态联想引擎，请先调用 with_cross_modal()".to_string()))?;
+
+        let encode_result = self.encoder.encode(query);
+        if encode_result.fragments.is_empty() {
+            return Err(HoloError::Encode("查询编码结果为空".to_string()));
+        }
+
+        let target_fragments = self.all_fragments();
+        if target_fragments.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        Ok(cm.cross_modal_search(
+            &encode_result.fragments[0],
+            source_modality,
+            &target_fragments,
+            target_modality,
+            top_k,
+        ))
+    }
+
+    /// 自适应存储：先评估重要性，再按决策结果执行存储并记录访问
+    ///
+    /// 需先配置 `with_adaptive_redundancy`，否则回退为普通 store
+    pub fn adaptive_store(&mut self, data: &[f64]) -> Result<AdaptiveStoreResult, HoloError> {
+        let store_result = self.store(data)?;
+
+        let decision = if let Some(ref mut ar) = self.adaptive_redundancy {
+            for &fragment_id in &store_result.fragment_ids {
+                ar.record_access(fragment_id);
+            }
+
+            let primary_id = store_result.fragment_ids.first().copied();
+            primary_id.map(|id| ar.decide(id)).unwrap_or_else(|| {
+                AdaptiveRedundancyDecision {
+                    importance: ImportanceScore {
+                        level: ImportanceLevel::Medium,
+                        score: 0.5,
+                        factors: ImportanceFactors {
+                            access_frequency: 0.0,
+                            recency: 1.0,
+                            connectivity: 0.0,
+                            reconstruction_value: 0.0,
+                        },
+                    },
+                    redundancy_level: 2,
+                    rs_parity_shards: 2,
+                    estimated_survival_rate: 0.75,
+                    storage_overhead_ratio: 1.5,
+                }
+            })
+        } else {
+            AdaptiveRedundancyDecision {
+                importance: ImportanceScore {
+                    level: ImportanceLevel::Medium,
+                    score: 0.5,
+                    factors: ImportanceFactors {
+                        access_frequency: 0.0,
+                        recency: 1.0,
+                        connectivity: 0.0,
+                        reconstruction_value: 0.0,
+                    },
+                },
+                redundancy_level: 2,
+                rs_parity_shards: 2,
+                estimated_survival_rate: 0.75,
+                storage_overhead_ratio: 1.5,
+            }
+        };
+
+        Ok(AdaptiveStoreResult {
+            store: store_result,
+            redundancy_decision: decision,
+        })
+    }
+
+    /// 构建推理传播图（从当前索引的所有片段）
+    pub fn build_propagation_graph(&mut self) {
+        let fragments = self.all_fragments();
+        if let Some(ref mut reasoner) = self.reasoner {
+            reasoner.build_propagation_graph(&fragments);
+        }
+    }
+
+    /// 注册推理模式模板（从数据提取频域模式）
+    pub fn register_reasoning_pattern(&mut self, name: &str, data: &[f64]) {
+        if let Some(ref mut reasoner) = self.reasoner {
+            let encode_result = self.encoder.encode(data);
+            if let Some(fragment) = encode_result.fragments.first() {
+                reasoner.register_pattern_from_fragment(name, fragment);
+            }
+        }
+    }
+
+    /// 推进自适应冗余引擎时间
+    pub fn advance_redundancy_time(&mut self, secs: u64) {
+        if let Some(ref mut ar) = self.adaptive_redundancy {
+            ar.advance_time(secs);
+        }
+    }
+
     pub fn config(&self) -> &HolographicConfig {
         &self.config
     }
 
     pub fn rs_codec(&self) -> Option<&ReedSolomon> {
         self.rs_codec.as_ref()
+    }
+
+    pub fn adaptive_redundancy(&self) -> Option<&AdaptiveRedundancy> {
+        self.adaptive_redundancy.as_ref()
+    }
+
+    pub fn reasoner(&self) -> Option<&HolographicReasoner> {
+        self.reasoner.as_ref()
+    }
+
+    pub fn cross_modal_reasoner(&self) -> Option<&CrossModalReasoner> {
+        self.cross_modal.as_ref()
     }
 
     pub fn save(&mut self) -> Result<(), HoloError> {
@@ -439,4 +632,10 @@ pub struct FaultToleranceResult {
     pub damage_ratio: f64,
     pub mse: f64,
     pub integrity: IntegrityReport,
+}
+
+/// 自适应存储结果（含冗余决策）
+pub struct AdaptiveStoreResult {
+    pub store: StoreResult,
+    pub redundancy_decision: AdaptiveRedundancyDecision,
 }
