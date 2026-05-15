@@ -1,0 +1,66 @@
+[package]
+name = "holographic-memory"
+version = "0.3.0"
+edition = "2021"
+description = "全息记忆存储引擎 - 基于傅里叶变换的超高密度容错知识表示"
+license = "MIT"
+readme = "README.md"
+keywords = ["holographic", "memory", "fft", "fourier", "associative"]
+categories = ["algorithms", "data-structures", "science"]
+repository = "https://github.com/holographic-memory/holographic-memory"
+documentation = "https://docs.rs/holographic-memory"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+
+[dependencies]
+ndarray = { version = "0.16", features = ["serde"] }
+num-complex = { version = "0.4", features = ["serde"] }
+rustfft = "6.2"
+serde = { version = "1", features = ["derive"] }
+bincode = "1.3"
+rayon = "1.10"
+tracing = "0.1"
+thiserror = "2"
+toml = "0.8"
+memmap2 = "0.9"
+serde_json = "1"
+
+[features]
+default = []
+http = ["dep:tokio", "dep:axum", "dep:tower-http"]
+bench = ["dep:criterion"]
+
+[[bin]]
+name = "holo-api"
+path = "src/bin/holo-api.rs"
+required-features = ["http"]
+
+[dependencies.tokio]
+version = "1"
+features = ["full"]
+optional = true
+
+[dependencies.axum]
+version = "0.8"
+optional = true
+
+[dependencies.tower-http]
+version = "0.6"
+features = ["cors"]
+optional = true
+
+[dev-dependencies]
+approx = "0.5"
+
+[dependencies.criterion]
+version = "0.5"
+features = ["html_reports"]
+optional = true
+
+[[bench]]
+name = "holographic_bench"
+harness = false
+required-features = ["bench"]
