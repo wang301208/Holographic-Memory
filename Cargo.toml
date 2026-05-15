@@ -1,6 +1,6 @@
 [package]
 name = "holographic-memory"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 description = "全息记忆存储引擎 - 基于傅里叶变换的超高密度容错知识表示"
 license = "MIT"

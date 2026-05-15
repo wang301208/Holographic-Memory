@@ -35,6 +35,7 @@ pub mod retrieval;
 pub mod types;
 pub mod api;
 pub mod holographic;
+pub mod distributed;
 
 pub use types::{
     AssociatedItem, FragmentId, FragmentMeta, HologramFragment, IntegrityReport, PhaseKey,
@@ -81,3 +82,10 @@ pub use storage::adaptive_redundancy::{
     ImportanceScore, ImportanceFactors, ImportanceLevel, SuggestedRsConfig,
 };
 pub use holographic::{HolographicMemory, HoloError, StoreResult, FaultToleranceResult, AdaptiveStoreResult};
+pub use distributed::{
+    ConsistentHashRing, VirtualNode, RingError,
+    GossipProtocol, GossipMessage, GossipConfig, MembershipState, NodeInfo, NodeStatus,
+    AntiEntropyRepair, RepairTask, RepairStatus, MerkleTree, MerkleNode, DiffReport,
+    DistributedHolographicNode, DistributedConfig, DistributedError,
+    DistributedStoreResult, DistributedRetrieveResult,
+};

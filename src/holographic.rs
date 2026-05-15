@@ -520,6 +520,22 @@ impl HolographicMemory {
         self.cross_modal.as_ref()
     }
 
+    pub fn all_fragments_pub(&self) -> Vec<HologramFragment> {
+        self.all_fragments()
+    }
+
+    pub fn encode(&mut self, data: &[f64]) -> Vec<HologramFragment> {
+        self.encoder.encode(data).fragments
+    }
+
+    pub fn decode_fragments(&mut self, fragments: &[HologramFragment], expected_len: usize) -> Vec<f64> {
+        self.encoder.decode(fragments, expected_len)
+    }
+
+    pub fn unweave(&self, fragments: &[HologramFragment]) -> Vec<HologramFragment> {
+        self.weaver.unweave(fragments)
+    }
+
     pub fn save(&mut self) -> Result<(), HoloError> {
         match &self.index {
             IndexBackend::Simple(idx) => {
@@ -616,6 +632,7 @@ impl HolographicMemory {
 }
 
 /// 存储操作的结果
+#[derive(Debug)]
 pub struct StoreResult {
     pub source_id: u64,
     pub source_hash: u64,

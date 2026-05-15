@@ -4,6 +4,19 @@
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/)。
 
+## [0.5.0] - 2025-05-16
+
+### 新增
+
+- 一致性哈希环 `ConsistentHashRing`：虚拟节点（默认150/物理节点）+ SipHash 分片 + N 副本查找 + 迁移计划计算 + 负载分布统计
+- Gossip 协议引擎 `GossipProtocol`：SWIM 风格成员管理 + Join/Alive/Suspect/Dead/Leave 消息 + 心跳 + 疑似→死亡晋升 + 消息传播衰减 + Refutation 机制
+- 反熵修复引擎 `AntiEntropyRepair`：Merkle 树差异检测 + 增量修复任务管理 + 并发修复控制 + 同步动作计算（Send/Request/Skip）
+- 分布式全息节点 `DistributedHolographicNode`：整合一致性哈希 + Gossip + 反熵 + HolographicMemory + 多副本写入 + 仲裁读 + 副本回退检索
+- 分布式 API：`distributed_store()` / `distributed_retrieve()` / `distributed_search()` / `distributed_reason()` / `distributed_cross_modal_search()` / `trigger_anti_entropy()` / `advance_repairs()`
+- 分布式集成测试：11 个测试（一致性哈希 + Gossip 成员管理 + Merkle 树差异检测 + 反熵修复 + 多节点存储/检索 + 集群状态）
+- lib.rs 分布式模块导出：`ConsistentHashRing`、`GossipProtocol`、`AntiEntropyRepair`、`DistributedHolographicNode` 等 14 个公开类型
+- `HolographicMemory` 公开访问器：`all_fragments_pub()` + `encode()` + `decode_fragments()` + `unweave()`
+
 ## [0.4.0] - 2025-05-16
 
 ### 新增
