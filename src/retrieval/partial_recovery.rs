@@ -24,7 +24,7 @@ impl PartialRecoveryEngine {
             recovery.fragments.len() as u32,
         );
 
-        let content = Vec::new();
+        let content = bincode::serialize(&recovery.fragments).unwrap_or_default();
 
         RetrievalResult {
             content,
@@ -32,6 +32,16 @@ impl PartialRecoveryEngine {
             associations: Vec::new(),
             integrity,
         }
+    }
+
+    pub fn recover_fragments(
+        &self,
+        available_fragments: &[HologramFragment],
+        total_fragment_count: u32,
+    ) -> Vec<HologramFragment> {
+        self.weaver
+            .recover_from_partial(available_fragments, total_fragment_count)
+            .fragments
     }
 
     pub fn can_recover(

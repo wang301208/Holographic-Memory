@@ -143,6 +143,7 @@ mod tests {
         let result = engine.recover(&fragments, 10);
         assert!(result.confidence > 0.0);
         assert!(result.integrity.damage_ratio <= 1.0);
+        assert!(!result.content.is_empty(), "恢复结果应包含可解码的片段内容");
     }
 
     #[test]
@@ -224,6 +225,42 @@ mod tests {
 
         let recovery = weaver.recover_from_partial(&available, n as u32);
         assert!(recovery.confidence > 0.0);
+    }
+
+    #[test]
+    fn test_sparse_encoder_compresses_and_roundtrips_major_energy() {
+        let encoder = SparseEncoder::new(0.3);
+        let fragment = create_test_fragment(42, 128);
+        let dense_bytes = bincode::serialize(&fragment).unwrap();
+
+        let sparse = encoder.sparsify(&fragment);
+        let sparse_bytes = bincode::serialize(&sparse).unwrap();
+        assert!(
+            (sparse_bytes.len() as f64) < (dense_bytes.len() as f64) * 0.3,
+            "稀疏表示未达到预期压缩比: dense={} sparse={}",
+            dense_bytes.len(),
+            sparse_bytes.len()
+        );
+
+        let restored = encoder.densify(&sparse);
+        assert_eq!(restored.frequency_domain.len(), fragment.frequency_domain.len());
+
+        let original_energy: f64 = fragment
+            .frequency_domain
+            .iter()
+            .map(|c| c.norm_sqr())
+            .sum();
+        let restored_energy: f64 = restored
+            .frequency_domain
+            .iter()
+            .map(|c| c.norm_sqr())
+            .sum();
+        assert!(
+            restored_energy / original_energy > 0.2,
+            "稀疏回填保留的能量过低: original={} restored={}",
+            original_energy,
+            restored_energy
+        );
     }
 
     fn create_test_fragment(id: FragmentId, size: usize) -> HologramFragment {

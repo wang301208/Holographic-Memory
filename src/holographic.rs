@@ -5,14 +5,17 @@ use crate::codec::hologram_fragmenter::HologramFragmenter;
 use crate::codec::redundancy_weaver::RedundancyWeaver;
 use crate::codec::reed_solomon::ReedSolomon;
 use crate::codec::cross_modal::{CrossModalReasoner, Modality, CrossModalAssociation};
+use crate::codec::sparse_encoder::SparseEncoder;
 use crate::foundation::config::HolographicConfig;
 use crate::retrieval::partial_recovery::PartialRecoveryEngine;
+use crate::retrieval::associative_search::AssociativeSearchEngine;
 use crate::retrieval::similarity_matcher::SimilarityMatcher;
 use crate::retrieval::holographic_reasoner::{HolographicReasoner, AttentionConfig, InferenceResult};
 use crate::storage::holographic_index::HolographicIndex;
 use crate::storage::persistence::PersistenceEngine;
 use crate::storage::tiered_index::{TieredIndex, TieredConfig};
 use crate::storage::mmap_persistence::MmapPersistence;
+use crate::storage::sparse_index::SparseIndex;
 use crate::storage::adaptive_redundancy::{
     AdaptiveRedundancy, RedundancyStrategy, AdaptiveRedundancyDecision,
     ImportanceScore, ImportanceFactors, ImportanceLevel,
@@ -43,6 +46,7 @@ pub enum HoloError {
 enum IndexBackend {
     Simple(HolographicIndex),
     Tiered(Box<TieredIndex>),
+    Sparse(Box<SparseIndex>),
 }
 
 /// 全息记忆存储引擎 - 统一高级 API
@@ -69,6 +73,7 @@ pub struct HolographicMemory {
     weaver: RedundancyWeaver,
     index: IndexBackend,
     matcher: SimilarityMatcher,
+    associative_search: AssociativeSearchEngine,
     recovery: PartialRecoveryEngine,
     persistence: Option<PersistenceEngine>,
     rs_codec: Option<ReedSolomon>,
@@ -88,6 +93,10 @@ impl HolographicMemory {
             fragmenter: HologramFragmenter::new(fragment_size),
             weaver: RedundancyWeaver::new(config.encoding.redundancy_level),
             matcher: SimilarityMatcher::new(config.retrieval.similarity_threshold),
+            associative_search: AssociativeSearchEngine::new(
+                config.retrieval.similarity_threshold,
+                config.retrieval.max_association_hops,
+            ),
             recovery: PartialRecoveryEngine::new(config.encoding.redundancy_level),
             persistence: None,
             index: IndexBackend::Simple(HolographicIndex::new()),
@@ -147,10 +156,16 @@ impl HolographicMemory {
         self
     }
 
+    pub fn with_sparse_index(mut self, top_k_ratio: f64) -> Self {
+        self.index = IndexBackend::Sparse(Box::new(SparseIndex::new(top_k_ratio)));
+        self
+    }
+
     fn insert_fragment(&mut self, fragment: HologramFragment) -> FragmentId {
         match &mut self.index {
             IndexBackend::Simple(idx) => idx.insert(fragment),
             IndexBackend::Tiered(idx) => idx.insert(fragment.clone()).unwrap_or(fragment.id),
+            IndexBackend::Sparse(idx) => idx.insert(fragment),
         }
     }
 
@@ -158,6 +173,7 @@ impl HolographicMemory {
         match &self.index {
             IndexBackend::Simple(idx) => idx.get_by_source(source_hash).into_iter().cloned().collect(),
             IndexBackend::Tiered(idx) => idx.get_by_source(source_hash).unwrap_or_default(),
+            IndexBackend::Sparse(idx) => idx.get_by_source(source_hash),
         }
     }
 
@@ -165,6 +181,7 @@ impl HolographicMemory {
         match &self.index {
             IndexBackend::Simple(idx) => idx.all_fragments().into_iter().cloned().collect(),
             IndexBackend::Tiered(_) => Vec::new(),
+            IndexBackend::Sparse(idx) => idx.all_fragments(),
         }
     }
 
@@ -172,6 +189,7 @@ impl HolographicMemory {
         match &self.index {
             IndexBackend::Simple(idx) => idx.len(),
             IndexBackend::Tiered(idx) => idx.len(),
+            IndexBackend::Sparse(idx) => idx.len(),
         }
     }
 
@@ -179,6 +197,7 @@ impl HolographicMemory {
         match &self.index {
             IndexBackend::Simple(idx) => idx.integrity_check(source_hash),
             IndexBackend::Tiered(idx) => idx.integrity_check(source_hash).unwrap_or_else(|_| IntegrityReport::new(0, 0)),
+            IndexBackend::Sparse(idx) => idx.integrity_check(source_hash),
         }
     }
 
@@ -233,6 +252,48 @@ impl HolographicMemory {
             fragment_count,
             total_fragments: total_after_weave,
             fragment_ids,
+        })
+    }
+
+    pub fn compression_report(&mut self, data: &[f64], top_k_ratio: f64) -> Result<CompressionReport, HoloError> {
+        let encode_result = self.encoder.encode(data);
+        if encode_result.fragments.is_empty() {
+            return Err(HoloError::Encode("缂栫爜缁撴灉涓虹┖".to_string()));
+        }
+
+        let sparse_encoder = SparseEncoder::new(top_k_ratio);
+        let mut dense_bytes = 0usize;
+        let mut sparse_bytes = 0usize;
+        let mut retained_energy = 0.0;
+
+        for fragment in &encode_result.fragments {
+            let sparse = sparse_encoder.sparsify(fragment);
+            dense_bytes += bincode::serialize(fragment).map(|bytes| bytes.len()).unwrap_or(0);
+            sparse_bytes += bincode::serialize(&sparse).map(|bytes| bytes.len()).unwrap_or(0);
+
+            let original_energy: f64 = fragment.frequency_domain.iter().map(|c| c.norm_sqr()).sum();
+            let restored = sparse_encoder.densify(&sparse);
+            let restored_energy: f64 = restored.frequency_domain.iter().map(|c| c.norm_sqr()).sum();
+            if original_energy > 0.0 {
+                retained_energy += restored_energy / original_energy;
+            }
+        }
+
+        let fragment_count = encode_result.fragments.len();
+        Ok(CompressionReport {
+            fragment_count,
+            dense_bytes,
+            sparse_bytes,
+            compression_ratio: if dense_bytes == 0 {
+                1.0
+            } else {
+                sparse_bytes as f64 / dense_bytes as f64
+            },
+            retained_energy_ratio: if fragment_count == 0 {
+                0.0
+            } else {
+                retained_energy / fragment_count as f64
+            },
         })
     }
 
@@ -328,6 +389,21 @@ impl HolographicMemory {
         Ok(results)
     }
 
+    pub fn associate(&mut self, query: &[f64], top_k: usize) -> Result<Vec<AssociatedItem>, HoloError> {
+        let encode_result = self.encoder.encode(query);
+        if encode_result.fragments.is_empty() {
+            return Err(HoloError::Retrieval("鏌ヨ缂栫爜缁撴灉涓虹┖".to_string()));
+        }
+
+        let candidates = self.all_fragments();
+        if candidates.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        self.associative_search.build_associations(&candidates);
+        Ok(self.associative_search.search(&encode_result.fragments[0], &candidates, top_k))
+    }
+
     pub fn integrity(&self, source_hash: u64) -> IntegrityReport {
         self.integrity_check(source_hash)
     }
@@ -340,6 +416,29 @@ impl HolographicMemory {
         self.recovery.recover(available, total)
     }
 
+    pub fn recover_and_decode(
+        &mut self,
+        available: &[HologramFragment],
+        total: u32,
+        expected_len: usize,
+    ) -> Result<Vec<f64>, HoloError> {
+        if !self.recovery.can_recover(available.len(), total) {
+            return Err(HoloError::Decode(format!(
+                "available fragments {} cannot recover total {}",
+                available.len(),
+                total
+            )));
+        }
+
+        let recovered = self.recovery.recover_fragments(available, total);
+        if recovered.is_empty() {
+            return Err(HoloError::Decode("recovery produced no fragments".to_string()));
+        }
+
+        let decoded = self.encoder.decode(&recovered, expected_len);
+        Ok(decoded)
+    }
+
     pub fn fragment_count(&self) -> usize {
         self.index_len()
     }
@@ -348,6 +447,7 @@ impl HolographicMemory {
         match &self.index {
             IndexBackend::Simple(idx) => idx.all_source_hashes().len(),
             IndexBackend::Tiered(_) => 0,
+            IndexBackend::Sparse(idx) => idx.all_source_hashes().len(),
         }
     }
 
@@ -553,6 +653,11 @@ impl HolographicMemory {
                     std::io::Error::new(std::io::ErrorKind::NotFound, "分层索引不支持WAL持久化"),
                 )))
             }
+            IndexBackend::Sparse(_) => {
+                Err(HoloError::Persistence(crate::storage::persistence::PersistenceError::Io(
+                    std::io::Error::new(std::io::ErrorKind::NotFound, "Sparse index does not support WAL persistence"),
+                )))
+            }
         }
     }
 
@@ -603,7 +708,9 @@ impl HolographicMemory {
             .cloned()
             .collect();
 
-        let decoded = self.encoder.decode(&available, data.len());
+        let decoded = self
+            .recover_and_decode(&available, store_result.fragment_count as u32, data.len())
+            .unwrap_or_else(|_| self.encoder.decode(&available, data.len()));
 
         let inner_start = total.min(64);
         let inner_end = data.len().saturating_sub(64);
@@ -655,4 +762,14 @@ pub struct FaultToleranceResult {
 pub struct AdaptiveStoreResult {
     pub store: StoreResult,
     pub redundancy_decision: AdaptiveRedundancyDecision,
+}
+
+/// 高密度压缩报告
+#[derive(Debug, Clone)]
+pub struct CompressionReport {
+    pub fragment_count: usize,
+    pub dense_bytes: usize,
+    pub sparse_bytes: usize,
+    pub compression_ratio: f64,
+    pub retained_energy_ratio: f64,
 }

@@ -229,6 +229,114 @@ fn test_fault_tolerance_tiered() {
 }
 
 #[test]
+fn test_recover_and_decode_with_50pct_original_damage() {
+    let config = HolographicConfig {
+        encoding: EncodingConfig {
+            fft_window_size: 256,
+            overlap_ratio: 0.5,
+            redundancy_level: 3,
+            phase_modulation: false,
+            normalize: true,
+        },
+        ..Default::default()
+    };
+
+    let mut hm = HolographicMemory::new(config);
+    let data = signal_data(1024);
+    let store = hm.store(&data).unwrap();
+    let fragments = hm.all_fragments_pub();
+
+    let mut original: Vec<HologramFragment> = fragments
+        .iter()
+        .filter(|f| !f.metadata.tags.iter().any(|t| t.starts_with("redundancy_L") || t.starts_with("parity_L")))
+        .cloned()
+        .collect();
+    original.sort_by_key(|f| f.metadata.fragment_index);
+
+    let parity_and_redundancy: Vec<HologramFragment> = fragments
+        .iter()
+        .filter(|f| f.metadata.tags.iter().any(|t| t.starts_with("redundancy_L") || t.starts_with("parity_L")))
+        .cloned()
+        .collect();
+
+    let mut available: Vec<HologramFragment> = original
+        .iter()
+        .take(original.len() / 2)
+        .cloned()
+        .collect();
+    available.extend(parity_and_redundancy);
+
+    let decoded = hm
+        .recover_and_decode(&available, store.fragment_count as u32, data.len())
+        .unwrap();
+
+    let inner_start = 256;
+    let inner_end = data.len() - 256;
+    let mse: f64 = data[inner_start..inner_end]
+        .iter()
+        .zip(decoded[inner_start..inner_end].iter())
+        .map(|(a, b)| (a - b).powi(2))
+        .sum::<f64>()
+        / (inner_end - inner_start) as f64;
+
+    assert!(mse < 0.2, "50%损坏恢复后的内部区间 MSE 过大: {}", mse);
+}
+
+#[test]
+fn test_sparse_index_stores_compressed_fragments_and_retrieves_by_source() {
+    let config = small_config();
+    let mut encoder = FourierEncoder::new(config.encoding);
+    let data = signal_data(512);
+    let encoded = encoder.encode(&data);
+    assert!(!encoded.fragments.is_empty());
+
+    let mut sparse_index = SparseIndex::new(0.3);
+    let dense_bytes: usize = encoded
+        .fragments
+        .iter()
+        .map(|fragment| bincode::serialize(fragment).unwrap().len())
+        .sum();
+
+    for fragment in encoded.fragments.clone() {
+        sparse_index.insert(fragment);
+    }
+
+    let sparse_bytes: usize = sparse_index
+        .get_sparse_by_source(encoded.source_hash)
+        .iter()
+        .map(|fragment| bincode::serialize(fragment).unwrap().len())
+        .sum();
+
+    assert_eq!(sparse_index.len(), encoded.fragments.len());
+    assert!(
+        (sparse_bytes as f64) < (dense_bytes as f64) * 0.3,
+        "稀疏索引未达到 0.3x: dense={} sparse={}",
+        dense_bytes,
+        sparse_bytes
+    );
+
+    let restored = sparse_index.get_by_source(encoded.source_hash);
+    assert_eq!(restored.len(), encoded.fragments.len());
+    assert!(restored.iter().all(|fragment| fragment.metadata.source_hash == encoded.source_hash));
+}
+
+#[test]
+fn test_holographic_memory_can_use_sparse_index_backend() {
+    let mut hm = HolographicMemory::new(small_config()).with_sparse_index(0.3);
+    let data = signal_data(512);
+    let store = hm.store(&data).unwrap();
+
+    assert!(store.total_fragments > 0);
+    assert_eq!(hm.fragment_count(), store.total_fragments);
+
+    let integrity = hm.integrity(store.source_hash);
+    assert_eq!(integrity.fragments_available as usize, store.total_fragments);
+
+    let results = hm.search(&data, 5).unwrap();
+    assert!(!results.is_empty());
+}
+
+#[test]
 fn test_error_paths() {
     let hm = HolographicMemory::new(small_config());
     let result = hm.save_mmap("test.mmap");

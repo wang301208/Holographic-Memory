@@ -1,5 +1,6 @@
 use num_complex::Complex64;
 use ndarray::Array2;
+use serde::{Deserialize, Serialize};
 
 use crate::types::{FragmentId, FragmentMeta, HologramFragment, PhaseKey};
 
@@ -7,9 +8,10 @@ pub struct SparseEncoder {
     top_k_ratio: f64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SparseFragment {
     pub id: FragmentId,
-    pub indices: Vec<usize>,
+    pub indices: Vec<u32>,
     pub coefficients: Vec<Complex64>,
     pub original_len: usize,
     pub metadata: FragmentMeta,
@@ -39,8 +41,8 @@ impl SparseEncoder {
         indexed.truncate(keep_count);
         indexed.sort_by_key(|a| a.0);
 
-        let indices: Vec<usize> = indexed.iter().map(|(i, _)| *i).collect();
-        let coefficients: Vec<Complex64> = indices.iter().map(|&i| freq[i]).collect();
+        let indices: Vec<u32> = indexed.iter().map(|(i, _)| *i as u32).collect();
+        let coefficients: Vec<Complex64> = indices.iter().map(|&i| freq[i as usize]).collect();
 
         SparseFragment {
             id: fragment.id,
@@ -54,6 +56,7 @@ impl SparseEncoder {
     pub fn densify(&self, sparse: &SparseFragment) -> HologramFragment {
         let mut freq = vec![Complex64::new(0.0, 0.0); sparse.original_len];
         for (k, &idx) in sparse.indices.iter().enumerate() {
+            let idx = idx as usize;
             if idx < sparse.original_len {
                 freq[idx] = sparse.coefficients[k];
             }
@@ -76,6 +79,11 @@ impl SparseEncoder {
 
     pub fn densify_batch(&self, sparse_fragments: &[SparseFragment]) -> Vec<HologramFragment> {
         sparse_fragments.iter().map(|s| self.densify(s)).collect()
+    }
+
+    pub fn compression_ratio(&self, fragment: &HologramFragment) -> f64 {
+        let sparse = self.sparsify(fragment);
+        sparse.storage_ratio(fragment)
     }
 
     pub fn energy_analysis(&self, fragment: &HologramFragment) -> EnergyReport {
@@ -114,6 +122,18 @@ impl SparseEncoder {
             concentration_ratio: top_10pct_energy / total_energy,
             effective_dimension: eff_dim,
             total_coefficients: freq.len(),
+        }
+    }
+}
+
+impl SparseFragment {
+    pub fn storage_ratio(&self, dense: &HologramFragment) -> f64 {
+        let dense_bytes = bincode::serialize(dense).map(|bytes| bytes.len()).unwrap_or(0);
+        let sparse_bytes = bincode::serialize(self).map(|bytes| bytes.len()).unwrap_or(0);
+        if dense_bytes == 0 {
+            1.0
+        } else {
+            sparse_bytes as f64 / dense_bytes as f64
         }
     }
 }

@@ -1,5 +1,6 @@
 use ndarray::Array2;
 use num_complex::Complex64;
+use std::collections::{HashMap, HashSet};
 
 use crate::types::{FragmentId, FragmentMeta, HologramFragment};
 
@@ -108,14 +109,24 @@ impl RedundancyWeaver {
         let mut recovered_count = 0usize;
 
         if missing_count > 0 {
-            let mut known_ids: std::collections::HashSet<FragmentId> = original_fragments
+            let mut known_ids: HashSet<FragmentId> = original_fragments
                 .iter()
                 .map(|f| f.id)
                 .collect();
-            let mut known_indices: std::collections::HashSet<u32> = original_fragments
+            let mut known_indices: HashSet<u32> = original_fragments
                 .iter()
                 .map(|f| f.metadata.fragment_index)
                 .collect();
+            let mut index_to_id: HashMap<u32, FragmentId> = original_fragments
+                .iter()
+                .map(|f| (f.metadata.fragment_index, f.id))
+                .collect();
+            let mut synthetic_id = available
+                .iter()
+                .map(|f| f.id)
+                .max()
+                .unwrap_or(0)
+                .saturating_add(1);
 
             if !parity_fragments.is_empty() {
                 let missing_ids: Vec<FragmentId> = (0..total_fragment_count as usize)
@@ -133,6 +144,9 @@ impl RedundancyWeaver {
                         let level = extract_parity_level(&parity_frag.metadata.tags);
                         if let Some(data_count) = extract_data_count(&parity_frag.metadata.tags) {
                             let source_ids: Vec<(usize, FragmentId)> = extract_source_ids(&parity_frag.metadata.tags);
+                            for (idx, id) in &source_ids {
+                                index_to_id.entry(*idx as u32).or_insert(*id);
+                            }
                             let missing_in_this: Vec<(usize, FragmentId)> = source_ids.iter()
                                 .filter(|(_, id)| !known_ids.contains(id))
                                 .cloned()
@@ -166,21 +180,64 @@ impl RedundancyWeaver {
                     changed = false;
 
                     for &redundant in &redundant_fragments {
-                        let source_idx = redundant.metadata.fragment_index;
-                        if known_indices.contains(&source_idx) {
-                            continue;
-                        }
-
                         if let Some(pair_info) = find_source_pair(&redundant.metadata.tags) {
                             let (pair_a, pair_b) = pair_info;
-                            let other_idx = if pair_a == source_idx as usize { pair_b } else { pair_a };
+                            let level = extract_redundancy_level(&redundant.metadata.tags);
+                            let pair_a_idx = pair_a as u32;
+                            let pair_b_idx = pair_b as u32;
+                            let a_known = known_indices.contains(&pair_a_idx);
+                            let b_known = known_indices.contains(&pair_b_idx);
 
-                            if known_indices.contains(&(other_idx as u32)) {
-                                let level = extract_redundancy_level(&redundant.metadata.tags);
-                                let restored = extract_from_redundant(redundant, level);
-                                if !known_indices.contains(&restored.metadata.fragment_index) {
+                            if a_known && !b_known {
+                                if let Some(known_a) = find_recovered_by_index(&recovered, pair_a_idx).cloned() {
+                                    let restored_id = next_recovered_id(
+                                        pair_b_idx,
+                                        &index_to_id,
+                                        &mut synthetic_id,
+                                        &known_ids,
+                                    );
+                                    let mut restored = recover_pair_component(
+                                        redundant,
+                                        &known_a,
+                                        pair_b_idx,
+                                        false,
+                                        level,
+                                        restored_id,
+                                        total_fragment_count,
+                                    );
+                                    if let Some(key_holder) = redundant_fragments
+                                        .iter()
+                                        .find(|f| f.metadata.fragment_index == pair_b_idx)
+                                    {
+                                        restored.phase_key = key_holder.phase_key.clone();
+                                    }
                                     known_ids.insert(restored.id);
                                     known_indices.insert(restored.metadata.fragment_index);
+                                    index_to_id.insert(restored.metadata.fragment_index, restored.id);
+                                    recovered.push(restored);
+                                    recovered_count += 1;
+                                    changed = true;
+                                }
+                            } else if b_known && !a_known {
+                                if let Some(known_b) = find_recovered_by_index(&recovered, pair_b_idx).cloned() {
+                                    let restored_id = next_recovered_id(
+                                        pair_a_idx,
+                                        &index_to_id,
+                                        &mut synthetic_id,
+                                        &known_ids,
+                                    );
+                                    let restored = recover_pair_component(
+                                        redundant,
+                                        &known_b,
+                                        pair_a_idx,
+                                        true,
+                                        level,
+                                        restored_id,
+                                        total_fragment_count,
+                                    );
+                                    known_ids.insert(restored.id);
+                                    known_indices.insert(restored.metadata.fragment_index);
+                                    index_to_id.insert(restored.metadata.fragment_index, restored.id);
                                     recovered.push(restored);
                                     recovered_count += 1;
                                     changed = true;
@@ -367,18 +424,62 @@ fn find_source_pair(tags: &[String]) -> Option<(usize, usize)> {
     None
 }
 
-fn extract_from_redundant(redundant: &HologramFragment, level: u8) -> HologramFragment {
-    let mut restored = redundant.clone();
+fn find_recovered_by_index(fragments: &[HologramFragment], index: u32) -> Option<&HologramFragment> {
+    fragments
+        .iter()
+        .find(|fragment| fragment.metadata.fragment_index == index)
+}
 
+fn next_recovered_id(
+    index: u32,
+    index_to_id: &HashMap<u32, FragmentId>,
+    synthetic_id: &mut FragmentId,
+    known_ids: &HashSet<FragmentId>,
+) -> FragmentId {
+    if let Some(id) = index_to_id.get(&index) {
+        return *id;
+    }
+    while known_ids.contains(synthetic_id) {
+        *synthetic_id = synthetic_id.saturating_add(1);
+    }
+    let id = *synthetic_id;
+    *synthetic_id = synthetic_id.saturating_add(1);
+    id
+}
+
+fn recover_pair_component(
+    redundant: &HologramFragment,
+    known: &HologramFragment,
+    target_index: u32,
+    target_is_first: bool,
+    level: u8,
+    restored_id: FragmentId,
+    total_fragment_count: u32,
+) -> HologramFragment {
     let phase = std::f64::consts::FRAC_PI_4 * level as f64;
-    let rot_conj = Complex64::new(phase.cos(), -phase.sin());
+    let rot = Complex64::new(phase.cos(), phase.sin());
+    let two = Complex64::new(2.0, 0.0);
 
-    for ((_i, _j), val) in restored.frequency_domain.indexed_iter_mut() {
-        let a_component = *val * Complex64::new(2.0, 0.0);
-        let b_estimated = a_component * rot_conj;
-        *val = b_estimated;
+    let mut restored = redundant.clone();
+    for ((row, col), val) in restored.frequency_domain.indexed_iter_mut() {
+        let known_value = if row < known.frequency_domain.nrows() && col < known.frequency_domain.ncols() {
+            known.frequency_domain[[row, col]]
+        } else {
+            Complex64::new(0.0, 0.0)
+        };
+
+        *val = if target_is_first {
+            *val * two - known_value * rot
+        } else {
+            (*val * two - known_value) / rot
+        };
     }
 
-    restored.metadata.tags.retain(|t| !t.starts_with("redundancy_L") && !t.starts_with("source_pair_"));
+    restored.id = restored_id;
+    restored.metadata = FragmentMeta::new(
+        redundant.metadata.source_hash,
+        total_fragment_count,
+        target_index,
+    );
     restored
 }

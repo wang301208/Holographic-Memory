@@ -7,3 +7,4 @@ pub mod lsm_index;
 pub mod mmap_persistence;
 pub mod tiered_index;
 pub mod adaptive_redundancy;
+pub mod sparse_index;

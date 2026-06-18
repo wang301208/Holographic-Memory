@@ -61,6 +61,7 @@ pub use codec::quantum_encoder::{QuantumEncoder, SuperpositionState, Interferenc
 pub use storage::lsm_index::{LsmIndex, LsmError, LsmStats, LevelStats};
 pub use storage::mmap_persistence::{MmapPersistence, MmapReader, MmapError};
 pub use storage::tiered_index::{TieredIndex, TieredConfig, TieredError, TieredStats, Layer};
+pub use storage::sparse_index::SparseIndex;
 
 #[cfg(feature = "http")]
 pub use api::http::{AppState, create_router, serve,
@@ -81,7 +82,7 @@ pub use storage::adaptive_redundancy::{
     AdaptiveRedundancy, RedundancyStrategy, AdaptiveRedundancyDecision,
     ImportanceScore, ImportanceFactors, ImportanceLevel, SuggestedRsConfig,
 };
-pub use holographic::{HolographicMemory, HoloError, StoreResult, FaultToleranceResult, AdaptiveStoreResult};
+pub use holographic::{HolographicMemory, HoloError, StoreResult, FaultToleranceResult, AdaptiveStoreResult, CompressionReport};
 pub use distributed::{
     ConsistentHashRing, VirtualNode, RingError,
     GossipProtocol, GossipMessage, GossipConfig, MembershipState, NodeInfo, NodeStatus,
